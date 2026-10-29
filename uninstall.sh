@@ -25,9 +25,15 @@ fi
 for exe in /proc/[0-9]*/exe; do
     target=$(readlink "$exe" 2>/dev/null || true)
     case "$target" in
-        "$INSTALL_DIR"/bin/*)
+        "$INSTALL_DIR"/bin/*|/bkupgrade/data/opt/soloist/bin/*)
             echo "ERROR: A Soloist process is still running ($exe). Stop it before deleting files." >&2
             exit 1 ;;
+        "$INSTALL_DIR"/lib64/ld-linux-aarch64.so.1|/bkupgrade/data/opt/soloist/lib64/ld-linux-aarch64.so.1)
+            pid=${exe#/proc/}; pid=${pid%/exe}
+            if tr '\000' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fxq "$INSTALL_DIR/bin/soloist"; then
+                echo "ERROR: A Soloist process is still running ($exe). Stop it before deleting files." >&2
+                exit 1
+            fi ;;
     esac
 done
 

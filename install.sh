@@ -311,8 +311,9 @@ export MALLOC_MMAP_THRESHOLD_=131072
 
 API_KEY="$API_KEY"
 
-LD_LIBRARY_PATH="/data/opt/soloist/lib64" \\
-nohup /data/opt/soloist/bin/soloist \\
+nohup /data/opt/soloist/lib64/ld-linux-aarch64.so.1 \\
+    --library-path /data/opt/soloist/lib64 \\
+    /data/opt/soloist/bin/soloist \\
     -n "$DEVICE_NAME" \\
     -k "\$API_KEY" \\
     -D /data/opt/soloist/data \\
@@ -341,15 +342,15 @@ fi
     # 1. Wait for daemon to become ready and activate device if logged in
     for attempt in \$(seq 1 15); do
         sleep 2
-        STATUS=\$(LD_LIBRARY_PATH="/data/opt/soloist/lib64" /data/opt/soloist/bin/soloist ctl -w 127.0.0.1:9090 status 2>/dev/null || true)
+        STATUS=\$(/data/opt/soloist/lib64/ld-linux-aarch64.so.1 --library-path /data/opt/soloist/lib64 /data/opt/soloist/bin/soloist ctl -w 127.0.0.1:9090 status 2>/dev/null || true)
         if echo "\$STATUS" | grep -qi "logged in: yes"; then
-            LD_LIBRARY_PATH="/data/opt/soloist/lib64" /data/opt/soloist/bin/soloist ctl -w 127.0.0.1:9090 activate >/dev/null 2>&1 || true
+            /data/opt/soloist/lib64/ld-linux-aarch64.so.1 --library-path /data/opt/soloist/lib64 /data/opt/soloist/bin/soloist ctl -w 127.0.0.1:9090 activate >/dev/null 2>&1 || true
             break
         fi
     done
 
     # 2. RAM guard: keep audio stream cache under 20MB so tmpfs never exhausts RAM
-    while true; do
+    while [ -x /data/opt/soloist/bin/soloist ]; do
         sleep 120
         if [ -d /tmp/soloist_cache/cache ]; then
             CACHE_KB=\$(du -sk /tmp/soloist_cache/cache 2>/dev/null | awk '{print \$1}')
@@ -363,6 +364,7 @@ fi
         fi
     done
 ) &
+echo \$! > /data/opt/soloist/data/guard.pid
 START_EOF
 chmod 700 "$INSTALL_DIR/start.sh"   # contains the Soloist API key
 
@@ -385,6 +387,13 @@ fi
 echo "Запуск службы..."
 "$INSTALL_DIR/start.sh"
 sleep 2
+SOLOIST_PID=$(cat "$INSTALL_DIR/data/soloist.pid" 2>/dev/null || true)
+if [ -z "$SOLOIST_PID" ] || ! kill -0 "$SOLOIST_PID" 2>/dev/null ||
+   ! "$INSTALL_DIR/lib64/ld-linux-aarch64.so.1" --library-path "$INSTALL_DIR/lib64" \
+      "$INSTALL_DIR/bin/soloist" ctl -w 127.0.0.1:9090 status >/dev/null 2>&1; then
+    echo "ERROR: Soloist did not stay running; inspect /tmp/soloist.log." >&2
+    exit 1
+fi
 
 echo ""
 echo "=== Установка успешно завершена! ==="
