@@ -35,6 +35,19 @@ try {
     foreach ($name in @('install.sh', 'uninstall.sh', 'PREP-MINI2-MINI3.md')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $staging -Force
     }
+    # Git on Windows may check out shell scripts with CRLF. BusyBox /bin/sh
+    # treats the carriage return in "set -e" as an invalid option.
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    foreach ($shellPath in @(
+        (Join-Path $staging 'install.sh'),
+        (Join-Path $staging 'uninstall.sh'),
+        (Join-Path $stagedScripts 'S99spotify-connect'),
+        (Join-Path $stagedScripts 'stop.sh'),
+        (Join-Path $stagedScripts 'status.sh')
+    )) {
+        $source = [System.IO.File]::ReadAllText($shellPath)
+        [System.IO.File]::WriteAllText($shellPath, $source.Replace("`r`n", "`n"), $utf8)
+    }
     # Never package developer credentials, accounts, caches, or Spotify session data.
     $outputPath = Join-Path $outputDir 'soloist-station-lite-prepared.tar.gz'
     tar -czf $outputPath -C $stagingParent soloist-station-lite
