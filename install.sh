@@ -83,7 +83,16 @@ if [ -z "$API_KEY" ]; then
         echo "https://developer.spotify.com/dashboard/soloist"
         echo ""
         printf "Введите ваш API-ключ (spak_...): "
-        read API_KEY
+        if [ -t 0 ]; then
+            stty -echo
+            trap 'stty echo' EXIT INT TERM
+            read -r API_KEY
+            stty echo
+            trap - EXIT INT TERM
+            printf '\n'
+        else
+            read -r API_KEY
+        fi
     fi
 fi
 
@@ -96,6 +105,7 @@ fi
 CLIENT_ID=""
 CLIENT_SECRET=""
 
+if [ -f "$SCRIPT_DIR/bin/soloist-bridge" ]; then
 if [ -f "/data/opt/soloist/spotify_api.conf" ]; then
     SAVED_CID=$(grep -o 'SPOTIFY_CLIENT_ID="[^"]*"' /data/opt/soloist/spotify_api.conf 2>/dev/null | cut -d'"' -f2 || true)
     SAVED_SEC=$(grep -o 'SPOTIFY_CLIENT_SECRET="[^"]*"' /data/opt/soloist/spotify_api.conf 2>/dev/null | cut -d'"' -f2 || true)
@@ -139,6 +149,7 @@ else
         printf "\033[1;31m***********************************************************************\033[0m\n\n"
         sleep 2
     fi
+fi
 fi
 
 # 6. Model & Device Name Detection
@@ -355,19 +366,20 @@ fi
 START_EOF
 chmod 700 "$INSTALL_DIR/start.sh"   # contains the Soloist API key
 
-# 10. Autostart setup in init.d (the only persistent rootfs change).
-echo "Настройка автозапуска при включении колонки..."
-if [ -f "$SCRIPT_DIR/scripts/S99spotify-connect" ]; then
+# 10. Keep the first trial in /data only. Enable persistent startup separately
+# after playback and rollback have been checked on the actual station.
+if [ "${SOLOIST_ENABLE_AUTOSTART:-0}" = 1 ]; then
+    echo "Настройка автозапуска при включении колонки..."
     mount -o remount,rw /
     trap 'mount -o remount,ro / 2>/dev/null || true' EXIT
     cp -f "$SCRIPT_DIR/scripts/S99spotify-connect" /etc/init.d/S99spotify-connect
     chmod 755 /etc/init.d/S99spotify-connect
     cp -f "$SCRIPT_DIR/scripts/S99spotify-connect" "$INSTALL_DIR/S99spotify-connect.installed"
+    mount -o remount,ro /
+    trap - EXIT
+else
+    echo "Пробный запуск: автозапуск не установлен; корневая ФС не менялась."
 fi
-
-# Make rootfs read-only again
-mount -o remount,ro /
-trap - EXIT
 
 # 12. Start service
 echo "Запуск службы..."
@@ -384,8 +396,11 @@ else
     echo "Мост Quasar выключен; голос и кнопки остаются у штатной Алисы."
 fi
 echo ""
-echo "Автозагрузка:"
-echo "  • Служба запускается автоматически при включении колонки через /etc/init.d/S99spotify-connect"
+if [ -e /etc/init.d/S99spotify-connect ]; then
+    echo "Автозагрузка включена через /etc/init.d/S99spotify-connect"
+else
+    echo "Автозагрузка выключена; после перезагрузки пробный Soloist не запустится."
+fi
 echo ""
 echo "Статус: $INSTALL_DIR/status.sh"
 echo "Остановить: $INSTALL_DIR/stop.sh"
