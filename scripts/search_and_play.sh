@@ -82,7 +82,7 @@ if [ -z "$SPOTIFY_CLIENT_ID" ] || [ -z "$SPOTIFY_CLIENT_SECRET" ]; then
     exit 0
 fi
 
-CURL_OPTS="--resolve api.spotify.com:443:5.175.161.40 --resolve accounts.spotify.com:443:5.175.161.40 -s"
+CURL_OPTS="--fail --silent --show-error"
 
 # Token management
 NOW=$(date +%s 2>/dev/null || echo 0)

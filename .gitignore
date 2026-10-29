@@ -9,3 +9,13 @@ cache/
 *.tar.gz
 *.zip
 *.yap
+
+# Downloaded from Spotify by prepare-official.ps1 for each trial
+bin/soloist
+bin/soloist.official.sha256
+
+# Third-party runtime libraries staged separately for offline review
+lib64/
+.soloist-staging/
+.package-staging/
+dist/

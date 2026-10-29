@@ -28,6 +28,45 @@ if [ "$FREE_KB" -lt 35000 ]; then
     exit 1
 fi
 
+# Never install a repackaged or unverified playback binary. Fetch Soloist from
+# Spotify's official ARM64 download immediately before installation.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -s "$SCRIPT_DIR/bin/soloist" ] || [ ! -s "$SCRIPT_DIR/bin/soloist.official.sha256" ]; then
+    echo "ERROR: Run prepare-official.ps1 on the PC to stage an official Soloist build." >&2
+    exit 1
+fi
+EXPECTED_SHA=$(cat "$SCRIPT_DIR/bin/soloist.official.sha256")
+ACTUAL_SHA=$(sha256sum "$SCRIPT_DIR/bin/soloist" | cut -d' ' -f1)
+if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+    echo "ERROR: Soloist binary does not match the staged official download." >&2
+    exit 1
+fi
+for required in lib64/ld-linux-aarch64.so.1 lib64/libpulse.so.0 scripts/S99spotify-connect scripts/stop.sh scripts/status.sh; do
+    if [ ! -s "$SCRIPT_DIR/$required" ]; then
+        echo "ERROR: Missing runtime file: $required" >&2
+        exit 1
+    fi
+done
+
+INSTALL_DIR="/data/opt/soloist"
+if [ -e "$INSTALL_DIR" ] || [ -e /etc/init.d/S99spotify-connect ]; then
+    echo "ERROR: Existing Soloist files found. Inspect and remove them before a fresh install." >&2
+    exit 1
+fi
+if pidof spotiya >/dev/null 2>&1; then
+    echo "ERROR: Spotiya is running. Stop it separately before installing Soloist." >&2
+    exit 1
+fi
+
+CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+if [ ! -s "$CERT_FILE" ]; then
+    CERT_FILE=/system/vendor/quasar/ca-certificates.crt
+fi
+if [ ! -s "$CERT_FILE" ]; then
+    echo "ERROR: No trusted CA bundle found; system files will not be modified to create one." >&2
+    exit 1
+fi
+
 # 4. API Key
 API_KEY="${1:-}"
 if [ -z "$API_KEY" ]; then
@@ -148,17 +187,11 @@ case "$DEVICE_NAME" in
     *[\"\$\`\\]*) echo "ERROR: Имя устройства не должно содержать \" \$ \` или \\." >&2; exit 1 ;;
 esac
 
-# 7. Stop previous instances
-echo "Остановка старых служб..."
-killall -9 soloist soloist-bridge spotiya 2>/dev/null || true
-sleep 1
-
 # 7. Create directories
-INSTALL_DIR="/data/opt/soloist"
 mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/lib64" "$INSTALL_DIR/scripts" "$INSTALL_DIR/data" "/tmp/soloist_cache"
+printf 'soloist-station-lite managed install\n' > "$INSTALL_DIR/.managed-by-alice-root"
 
 # 8. Copy files
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Копирование бинарников и библиотек..."
 cp -f "$SCRIPT_DIR/bin/soloist" "$INSTALL_DIR/bin/soloist"
 if [ -f "$SCRIPT_DIR/bin/soloist-bridge" ]; then
@@ -203,31 +236,7 @@ fi
 chmod 755 "$INSTALL_DIR/bin/soloist" "$INSTALL_DIR/lib64/ld-linux-aarch64.so.1"
 chmod 755 "$INSTALL_DIR/stop.sh" "$INSTALL_DIR/status.sh"
 
-# 9. SSL Certificates & Hosts SNI Proxy (bypass 403 country restrictions)
-echo "Настройка SSL-сертификатов и сети..."
-mount -o remount,rw / 2>/dev/null || true
-# Always put the rootfs back to read-only, even if a later step fails (set -e)
-trap 'mount -o remount,ro / 2>/dev/null || true' EXIT
-
-if [ ! -f "/etc/ssl/certs/ca-certificates.crt" ]; then
-    mkdir -p /etc/ssl/certs
-    if [ -f "/system/vendor/quasar/ca-certificates.crt" ]; then
-        ln -sf /system/vendor/quasar/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-    fi
-fi
-
-if ! grep -q "5.175.161.40" /etc/hosts 2>/dev/null; then
-    cat << 'HOSTS_EOF' >> /etc/hosts
-
-# Spotify SNI Proxy (Bypass 403 geoblock)
-5.175.161.40 accounts.spotify.com
-5.175.161.40 api.spotify.com
-5.175.161.40 open.spotify.com
-5.175.161.40 spclient.wg.spotify.com
-HOSTS_EOF
-fi
-
-# 10. Generate start.sh
+# 9. Generate start.sh. No Spotify DNS overrides, proxy, or CA edits.
 echo "Генерация start.sh..."
 cat << START_EOF > "$INSTALL_DIR/start.sh"
 #!/bin/sh
@@ -253,8 +262,8 @@ sleep 2
 
 export APULSE_PLAYBACK_DEVICE=plug:default
 export APULSE_DIAG=0
-export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export CURL_CA_BUNDLE="$CERT_FILE"
+export SSL_CERT_FILE="$CERT_FILE"
 
 API_KEY="$API_KEY"
 
@@ -265,7 +274,7 @@ nohup /data/opt/soloist/bin/soloist \\
     -D /data/opt/soloist/data \\
     -C /tmp/soloist_cache \\
     -w 127.0.0.1:9090 \\
-    --initial-volume 100 \\
+    --initial-volume 40 \\
     -v > /tmp/soloist.log 2>&1 &
 
 echo \$! > /data/opt/soloist/data/soloist.pid
@@ -273,9 +282,14 @@ echo "Spotify Soloist (arm64) started, PID=\$(cat /data/opt/soloist/data/soloist
 
 sleep 1
 
-if [ -x /data/opt/soloist/bin/soloist-bridge ]; then
-    /sbin/start-stop-daemon -S -b -m -p /data/opt/soloist/data/bridge.pid -a /bin/sh -- -c "exec /data/opt/soloist/bin/soloist-bridge >> /tmp/soloist-bridge.log 2>&1" || /usr/bin/setsid /data/opt/soloist/bin/soloist-bridge > /tmp/soloist-bridge.log 2>&1 < /dev/null &
-    echo "Soloist Bridge (Fast Control + Full Search) started, PID=\$(cat /data/opt/soloist/data/bridge.pid 2>/dev/null)"
+# The Quasar voice/button bridge is intentionally opt-in. It can conflict with
+# native Yandex Music and needs separate validation for Mini 2 and Mini 3.
+if [ -f /data/opt/soloist/bridge-enabled ] && [ -x /data/opt/soloist/bin/soloist-bridge ]; then
+    if /sbin/start-stop-daemon -S -b -m -p /data/opt/soloist/data/bridge.pid -a /bin/sh -- -c "exec /data/opt/soloist/bin/soloist-bridge >> /tmp/soloist-bridge.log 2>&1"; then
+        echo "Soloist Bridge started, PID=\$(cat /data/opt/soloist/data/bridge.pid 2>/dev/null)"
+    else
+        echo "Soloist Bridge did not start" >&2
+    fi
 fi
 
 # Activation & RAM cache guard
@@ -308,15 +322,19 @@ fi
 START_EOF
 chmod 700 "$INSTALL_DIR/start.sh"   # contains the Soloist API key
 
-# 11. Autostart setup in init.d
+# 10. Autostart setup in init.d (the only persistent rootfs change).
 echo "Настройка автозапуска при включении колонки..."
 if [ -f "$SCRIPT_DIR/scripts/S99spotify-connect" ]; then
+    mount -o remount,rw /
+    trap 'mount -o remount,ro / 2>/dev/null || true' EXIT
     cp -f "$SCRIPT_DIR/scripts/S99spotify-connect" /etc/init.d/S99spotify-connect
     chmod 755 /etc/init.d/S99spotify-connect
+    cp -f "$SCRIPT_DIR/scripts/S99spotify-connect" "$INSTALL_DIR/S99spotify-connect.installed"
 fi
 
 # Make rootfs read-only again
-mount -o remount,ro / 2>/dev/null || true
+mount -o remount,ro /
+trap - EXIT
 
 # 12. Start service
 echo "Запуск службы..."

@@ -10,14 +10,35 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+INSTALL_DIR=/data/opt/soloist
+INIT_SCRIPT=/etc/init.d/S99spotify-connect
+if [ ! -f "$INSTALL_DIR/.managed-by-alice-root" ]; then
+    echo "ERROR: This installation was not created by the prepared installer; refusing to delete unknown files." >&2
+    exit 1
+fi
+if [ -e "$INIT_SCRIPT" ] && ! cmp -s "$INIT_SCRIPT" "$INSTALL_DIR/S99spotify-connect.installed"; then
+    echo "ERROR: The init script changed since installation. Inspect it before uninstalling." >&2
+    exit 1
+fi
+
 [ ! -x "/data/opt/soloist/stop.sh" ] || /data/opt/soloist/stop.sh
-killall -9 soloist soloist-bridge 2>/dev/null || true
+for exe in /proc/[0-9]*/exe; do
+    target=$(readlink "$exe" 2>/dev/null || true)
+    case "$target" in
+        "$INSTALL_DIR"/bin/*)
+            echo "ERROR: A Soloist process is still running ($exe). Stop it before deleting files." >&2
+            exit 1 ;;
+    esac
+done
 
-mount -o remount,rw / 2>/dev/null || true
-rm -f /etc/init.d/S99spotify-connect /etc/init.d/S99spotify-soloist 2>/dev/null || true
-# Remove the Spotify SNI-proxy entries added by install.sh
-sed -i -e '/^# Spotify SNI Proxy/d' -e '/^5\.175\.161\.40[[:space:]]/d' /etc/hosts 2>/dev/null || true
-mount -o remount,ro / 2>/dev/null || true
+if [ -e "$INIT_SCRIPT" ]; then
+    mount -o remount,rw /
+    trap 'mount -o remount,ro / 2>/dev/null || true' EXIT
+    rm -f "$INIT_SCRIPT"
+    mount -o remount,ro /
+    trap - EXIT
+fi
 
-rm -rf /data/opt/soloist /tmp/soloist_cache /tmp/soloist.log /tmp/soloist-bridge.log
+rm -rf "$INSTALL_DIR" /tmp/soloist_cache
+rm -f /tmp/soloist.log /tmp/soloist-bridge.log
 echo "Spotify Soloist и Bridge успешно удалены."
