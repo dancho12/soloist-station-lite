@@ -218,6 +218,23 @@ if [ -f "$SCRIPT_DIR/scripts/search_and_play.sh" ]; then
     chmod 755 "$INSTALL_DIR/scripts/search_and_play.sh"
 fi
 
+for helper in control.sh request_state.sh soloist-cli soloist-service.sh; do
+    if [ -f "$SCRIPT_DIR/scripts/$helper" ]; then
+        cp -f "$SCRIPT_DIR/scripts/$helper" "$INSTALL_DIR/scripts/$helper"
+        chmod 755 "$INSTALL_DIR/scripts/$helper"
+    fi
+done
+
+if [ -f "$SCRIPT_DIR/scripts/soloist-cli" ]; then
+    cp -f "$SCRIPT_DIR/scripts/soloist-cli" "$INSTALL_DIR/bin/soloist-cli"
+    chmod 755 "$INSTALL_DIR/bin/soloist-cli"
+    mkdir -p /data/opt/bin
+    ln -sf "$INSTALL_DIR/bin/soloist-cli" /data/opt/bin/soloist 2>/dev/null || true
+    ln -sf "$INSTALL_DIR/bin/soloist-cli" /data/opt/bin/soloistctl 2>/dev/null || true
+fi
+
+printf "v1.2.0\n" > "$INSTALL_DIR/version"
+
 # Spotify Search API Credentials
 if [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_SECRET" ]; then
     cat << EOF_CONF > "$INSTALL_DIR/spotify_api.conf"
@@ -247,8 +264,21 @@ set -e
 export PATH="/bin:/usr/bin:/sbin:/usr/sbin:\$PATH"
 unset LD_LIBRARY_PATH LD_PRELOAD
 
-mkdir -p /data/opt/soloist/data /tmp/soloist_cache /data/opt/soloist/scripts
+mkdir -p /data/opt/soloist/data /tmp/soloist_cache/cache /tmp/soloist_cache/Storage /data/opt/soloist/data/cache /data/opt/soloist/scripts
+if [ ! -L /data/opt/soloist/data/cache/Storage ]; then
+    rm -rf /data/opt/soloist/data/cache/Storage 2>/dev/null || true
+    ln -sfn /tmp/soloist_cache/Storage /data/opt/soloist/data/cache/Storage 2>/dev/null || true
+fi
 /data/opt/soloist/stop.sh >/dev/null 2>&1 || true
+
+# 0. Enable zram compressed swap (64MB) if available and inactive to prevent OOM
+if [ -e /dev/zram0 ] && [ "\$(cat /sys/block/zram0/disksize 2>/dev/null)" = "0" ]; then
+    echo 67108864 > /sys/block/zram0/disksize 2>/dev/null || true
+    mkswap /dev/zram0 >/dev/null 2>&1 || true
+    swapon /dev/zram0 >/dev/null 2>&1 || true
+    sysctl -w vm.swappiness=20 >/dev/null 2>&1 || true
+    sysctl -w vm.vfs_cache_pressure=150 >/dev/null 2>&1 || true
+fi
 
 for i in \$(seq 1 45); do
     if ip -4 addr show wlan0 2>/dev/null | grep -q "inet "; then
@@ -264,6 +294,9 @@ export APULSE_PLAYBACK_DEVICE=plug:default
 export APULSE_DIAG=0
 export CURL_CA_BUNDLE="$CERT_FILE"
 export SSL_CERT_FILE="$CERT_FILE"
+export MALLOC_ARENA_MAX=1
+export MALLOC_TRIM_THRESHOLD_=131072
+export MALLOC_MMAP_THRESHOLD_=131072
 
 API_KEY="$API_KEY"
 
@@ -275,7 +308,7 @@ nohup /data/opt/soloist/bin/soloist \\
     -C /tmp/soloist_cache \\
     -w 127.0.0.1:9090 \\
     --initial-volume 40 \\
-    -v > /tmp/soloist.log 2>&1 &
+    > /tmp/soloist.log 2>&1 &
 
 echo \$! > /data/opt/soloist/data/soloist.pid
 echo "Spotify Soloist (arm64) started, PID=\$(cat /data/opt/soloist/data/soloist.pid)"
@@ -345,27 +378,24 @@ echo ""
 echo "=== Установка успешно завершена! ==="
 echo "Имя устройства в Spotify: $DEVICE_NAME"
 echo ""
-echo "Управление голосом:"
-echo "  • «Алиса, включи [название трека или исполнителя]»  -> Поиск и воспроизведение в Spotify"
-echo "  • «Алиса, поставь [песню / артиста]»                -> Поиск и воспроизведение в Spotify"
-echo "  • «Алиса, найди [песню / группу]»                  -> Поиск и воспроизведение в Spotify"
-echo "  • «Алиса, пауза» / «стоп» / «хватит»               -> Пауза"
-echo "  • «Алиса, дальше» / «следующий трек»              -> Следующий трек"
-echo "  • «Алиса, назад» / «предыдущий трек»              -> Предыдущий трек"
-echo "  • «Алиса, перемешай» / «в случайном порядке»       -> Режим случайного воспроизведения"
-echo "  • «Алиса, по порядку»                             -> Выключить перемешивание"
-echo "  • «Алиса, зацикли» / «повторяй»                    -> Повтор трека"
-echo "  • «Алиса, громче» / «тише»                         -> Громкость"
-echo ""
-echo "Сенсорная кнопка на колонке:"
-echo "  • Короткое касание центра: Play / Pause"
+if [ -f "$INSTALL_DIR/bridge-enabled" ] && [ -x "$INSTALL_DIR/bin/soloist-bridge" ]; then
+    echo "Мост Quasar включён; управление голосом и кнопками требует проверки на устройстве."
+else
+    echo "Мост Quasar выключен; голос и кнопки остаются у штатной Алисы."
+fi
 echo ""
 echo "Автозагрузка:"
 echo "  • Служба запускается автоматически при включении колонки через /etc/init.d/S99spotify-connect"
 echo ""
-echo "Управление службой в консоли:"
-echo "  Статус:  /data/opt/soloist/status.sh"
-echo "  Стоп:    /data/opt/soloist/stop.sh"
-echo "  Старт:   /data/opt/soloist/start.sh"
-echo "  Логи:    tail -f /tmp/soloist.log /tmp/soloist-search.log"
+echo "Статус: $INSTALL_DIR/status.sh"
+echo "Остановить: $INSTALL_DIR/stop.sh"
+echo "Запустить: $INSTALL_DIR/start.sh"
 echo "=========================================================="
+
+# 12. Cleanup temporary installer files to prevent cluttering /data
+if [ -d "/data/local/tmp/soloist-station-lite" ] && [ "$SCRIPT_DIR" = "/data/local/tmp/soloist-station-lite" ]; then
+    echo "Очистка временных файлов установки..."
+    rm -f /data/local/tmp/soloist-station-lite.tar.gz 2>/dev/null || true
+    # Remove installer directory on shell exit
+    trap 'rm -rf /data/local/tmp/soloist-station-lite 2>/dev/null || true' EXIT
+fi

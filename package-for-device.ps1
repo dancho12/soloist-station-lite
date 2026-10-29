@@ -27,7 +27,11 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "bin/$name") -Destination $stagedBin -Force
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'lib64') -Destination $staging -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scripts') -Destination $staging -Recurse -Force
+    $stagedScripts = Join-Path $staging 'scripts'
+    New-Item -ItemType Directory -Path $stagedScripts -Force | Out-Null
+    foreach ($name in @('S99spotify-connect', 'stop.sh', 'status.sh')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "scripts/$name") -Destination $stagedScripts -Force
+    }
     foreach ($name in @('install.sh', 'uninstall.sh', 'PREP-MINI2-MINI3.md')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $staging -Force
     }

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "voice-request.h"
 
 /* Minimal Linux system call wrappers for AArch64 (ARM64) */
 
@@ -34,6 +35,53 @@ static inline int sys_close(int fd) {
     register long x8 __asm__("x8") = 57;
     register long x0 __asm__("x0") = fd;
     __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return (int)x0;
+}
+
+static inline int sys_mkdir(const char *path, int mode) {
+    register long x8 __asm__("x8") = 34; // mkdirat
+    register long x0 __asm__("x0") = -100;
+    register long x1 __asm__("x1") = (long)path;
+    register long x2 __asm__("x2") = mode;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return (int)x0;
+}
+
+static inline int sys_rename(const char *from, const char *to) {
+    register long x8 __asm__("x8") = 38; // renameat
+    register long x0 __asm__("x0") = -100;
+    register long x1 __asm__("x1") = (long)from;
+    register long x2 __asm__("x2") = -100;
+    register long x3 __asm__("x3") = (long)to;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory");
+    return (int)x0;
+}
+
+static inline int sys_pipe(int fds[2]) {
+    register long x8 __asm__("x8") = 59; // pipe2
+    register long x0 __asm__("x0") = (long)fds;
+    register long x1 __asm__("x1") = 2048; // O_NONBLOCK
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1) : "memory");
+    return (int)x0;
+}
+
+static inline int sys_dup3(int from, int to) {
+    register long x8 __asm__("x8") = 24;
+    register long x0 __asm__("x0") = from;
+    register long x1 __asm__("x1") = to;
+    register long x2 __asm__("x2") = 0;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return (int)x0;
+}
+
+static inline int sys_signal_default(int signal) {
+    struct { unsigned long handler, flags, restorer, mask; } action = {0, 0, 0, 0};
+    register long x8 __asm__("x8") = 134; // rt_sigaction
+    register long x0 __asm__("x0") = signal;
+    register long x1 __asm__("x1") = (long)&action;
+    register long x2 __asm__("x2") = 0;
+    register long x3 __asm__("x3") = 8; // Kernel sigset size, not libc's sigset_t.
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory");
     return (int)x0;
 }
 
@@ -120,6 +168,60 @@ static inline void sys_exit(int code) {
     while (1) {}
 }
 
+static inline int sys_unlink(const char *path) {
+#ifdef __aarch64__
+    register long x8 __asm__("x8") = 35; // unlinkat
+    register long x0 __asm__("x0") = -100; // AT_FDCWD
+    register long x1 __asm__("x1") = (long)path;
+    register long x2 __asm__("x2") = 0;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return (int)x0;
+#else
+    extern int unlink(const char *path);
+    return unlink(path);
+#endif
+}
+
+static inline int sys_shmget(int key, unsigned long size, int shmflg) {
+#ifdef __aarch64__
+    register long x8 __asm__("x8") = 194;
+    register long x0 __asm__("x0") = key;
+    register long x1 __asm__("x1") = size;
+    register long x2 __asm__("x2") = shmflg;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return (int)x0;
+#else
+    (void)key; (void)size; (void)shmflg;
+    return -1;
+#endif
+}
+
+static inline void *sys_shmat(int shmid, const void *shmaddr, int shmflg) {
+#ifdef __aarch64__
+    register long x8 __asm__("x8") = 196;
+    register long x0 __asm__("x0") = shmid;
+    register long x1 __asm__("x1") = (long)shmaddr;
+    register long x2 __asm__("x2") = shmflg;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return (void *)x0;
+#else
+    (void)shmid; (void)shmaddr; (void)shmflg;
+    return (void *)-1;
+#endif
+}
+
+static inline int sys_shmdt(const void *shmaddr) {
+#ifdef __aarch64__
+    register long x8 __asm__("x8") = 197;
+    register long x0 __asm__("x0") = (long)shmaddr;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return (int)x0;
+#else
+    (void)shmaddr;
+    return -1;
+#endif
+}
+
 static inline long sys_wait4(int pid, int *status, int options, void *rusage) {
     register long x8 __asm__("x8") = 260;
     register long x0 __asm__("x0") = pid;
@@ -171,15 +273,34 @@ static int64_t now_ms(void) {
     return 0;
 }
 
-/* Builds and sends one AliceCapability method frame via Quasar IPC (SharedMessage).
- * Wire format verified against Quasar & Spotiya:
- * [uint32_le msg_len (28)]
- * field 252 (Remoting):
- *   field 7 ("AliceCapability")
- *   field 8 ({ 0x08, method })
- * field 253 (type = 210, varint 0xd2 0x01)
+/* Builds and sends one AliceCapability method frame via Quasar Native IPC (QuasarMessage field 210).
+ * Length: 24 bytes body (0x18, 0x00, 0x00, 0x00)
+ * Tag 210 (wire type 2): 0x92, 0x0d
+ * Remoting length: 21 bytes (0x15)
+ * Tag 7 ("AliceCapability"): 0x3a, 0x0f, 'AliceCapability'
+ * Tag 8 ({ 0x08, method }): 0x42, 0x02, 0x08, method
  */
-static int send_alice_method(int quasar_fd, unsigned char method) {
+static int send_alice_method_f210(int quasar_fd, unsigned char method) {
+    if (quasar_fd < 0) return -1;
+    static const unsigned char frame_template[28] = {
+        0x18, 0x00, 0x00, 0x00, // length = 24
+        0x92, 0x0d,             // tag: field 210, wire type 2
+        0x15,                   // remoting length = 21 bytes
+        0x3a, 0x0f,             // tag: field 7, len 15
+        'A','l','i','c','e','C','a','p','a','b','i','l','i','t','y',
+        0x42, 0x02,             // tag: field 8, len 2
+        0x08, 0x00              // method field 1 (0x08), method byte (filled at [27])
+    };
+    unsigned char frame[28];
+    for (int i = 0; i < 28; i++) frame[i] = frame_template[i];
+    frame[27] = method;
+
+    long n = sys_write(quasar_fd, frame, sizeof(frame));
+    return (n == (long)sizeof(frame)) ? 0 : -1;
+}
+
+/* Also sends SharedMessage wrapper (field 252 + field 253: 210) for newer/alternate Quasar daemons */
+static int send_alice_method_f252(int quasar_fd, unsigned char method) {
     if (quasar_fd < 0) return -1;
     static const unsigned char frame_template[32] = {
         0x1c, 0x00, 0x00, 0x00, // length = 28
@@ -200,6 +321,37 @@ static int send_alice_method(int quasar_fd, unsigned char method) {
     return (n == (long)sizeof(frame)) ? 0 : -1;
 }
 
+static int send_alice_method(int quasar_fd, unsigned char method) {
+    int r1 = send_alice_method_f210(quasar_fd, method);
+    int r2 = send_alice_method_f252(quasar_fd, method);
+    return (r1 == 0 || r2 == 0) ? 0 : -1;
+}
+
+/* Sends PlaybackControlCapability PAUSE (method kind 1) to pause any native media player */
+static void send_playback_pause(int quasar_fd) {
+    if (quasar_fd < 0) return;
+    // Native field 210: 38 bytes
+    static const unsigned char p210[38] = {
+        0x22, 0x00, 0x00, 0x00,
+        0x92, 0x0d, 0x1f,
+        0x3a, 0x19,
+        'P','l','a','y','b','a','c','k','C','o','n','t','r','o','l','C','a','p','a','b','i','l','i','t','y',
+        0x6a, 0x02, 0x08, 0x01
+    };
+    sys_write(quasar_fd, p210, sizeof(p210));
+
+    // SharedMessage field 252/253: 42 bytes
+    static const unsigned char p252[42] = {
+        0x26, 0x00, 0x00, 0x00,
+        0xe2, 0x0f, 0x1f,
+        0x3a, 0x19,
+        'P','l','a','y','b','a','c','k','C','o','n','t','r','o','l','C','a','p','a','b','i','l','i','t','y',
+        0x6a, 0x02, 0x08, 0x01,
+        0xe8, 0x0f, 0xd2, 0x01
+    };
+    sys_write(quasar_fd, p252, sizeof(p252));
+}
+
 static void send_cancel_alice(int quasar_fd) {
     if (quasar_fd < 0) return;
     int err = 0;
@@ -213,8 +365,10 @@ static void send_cancel_alice(int quasar_fd) {
     if (send_alice_method(quasar_fd, 0x0e) < 0) err = 1;
     if (send_alice_method(quasar_fd, 1) < 0) err = 1;
 
+    send_playback_pause(quasar_fd);
+
     if (!err) {
-        log_msg("[bridge] Sent cancel_alice (stop+queue+tts+dialog) via Remoting f252/f253 to Quasar\n");
+        log_msg("[bridge] Sent cancel_alice (stop+queue+tts+dialog+pause) to Quasar\n");
     } else {
         log_msg("[bridge] Warning: Failed to send cancel_alice to Quasar socket\n");
     }
@@ -229,165 +383,161 @@ static void trigger_alice_suppression(int quasar_fd, int duration_ms) {
 
 static int is_yam_mode = 0;
 
-static const char *get_soloist_bin(void) {
-    return is_yam_mode ? "./bin/soloist" : "/data/opt/soloist/bin/soloist";
-}
-
-static const char *get_toggle_sh(void) {
-    return is_yam_mode ? "./scripts/toggle.sh" : "/data/opt/soloist/scripts/toggle.sh";
-}
-
-static const char *get_search_sh(void) {
-    return is_yam_mode ? "./scripts/search_and_play.sh" : "/data/opt/soloist/scripts/search_and_play.sh";
+static const char *get_controller_sh(void) {
+    int fd = sys_open("./bin/control.sh", 0 /* O_RDONLY */, 0);
+    if (fd >= 0) { sys_close(fd); return "./bin/control.sh"; }
+    return is_yam_mode ? "./scripts/control.sh" : "/data/opt/soloist/scripts/control.sh";
 }
 
 static const char *get_censor_path(void) {
     return is_yam_mode ? "./data/censorship" : "/data/opt/soloist/data/censorship";
 }
 
-static void run_soloist_cmd(const char *cmd) {
-    long pid = sys_clone(17 /* SIGCHLD */, 0);
-    if (pid == 0) {
-        const char *bin = get_soloist_bin();
-        const char *envp[] = {
-            "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-            "LD_LIBRARY_PATH=./lib64:/data/opt/soloist/lib64",
-            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-            0
-        };
-        if (cmd && cmd[0] == 'p' && cmd[1] == 'l') { // "play"
-            long apid = sys_clone(17, 0);
-            if (apid == 0) {
-                const char *act_argv[] = { bin, "ctl", "-w", "127.0.0.1:9090", "activate", 0 };
-                sys_execve(bin, act_argv, envp);
-                sys_exit(1);
-            }
-            int status = 0;
-            sys_wait4((int)apid, &status, 0, 0);
-            sys_msleep(300); // 300ms delay to let Alice release ALSA dmix
+static int str_equal(const char *a, const char *b);
+static uint64_t track_observation_revision;
+
+static int selection_needs_observation(void) {
+    const char *pending = is_yam_mode ? "./data/requests/selection.pending" : "/data/opt/soloist/data/requests/selection.pending";
+    const char *selection = is_yam_mode ? "./data/requests/selection" : "/data/opt/soloist/data/requests/selection";
+    const char *track = is_yam_mode ? "./data/requests/track" : "/data/opt/soloist/data/requests/track";
+    int fd = sys_open(pending, 0, 0);
+    if (fd < 0) fd = sys_open(selection, 0, 0);
+    if (fd < 0) return 0;
+    char selected[256], observed[256];
+    long n = sys_read(fd, selected, sizeof(selected));
+    sys_close(fd);
+    if (n <= 0 || n == (long)sizeof(selected)) return 0;
+    fd = sys_open(track, 0, 0);
+    if (fd < 0) return 0;
+    long m = sys_read(fd, observed, sizeof(observed));
+    sys_close(fd);
+    if (n != m) return 0;
+    for (long i = 0; i < n; i++) if (selected[i] != observed[i]) return 0;
+    return 1;
+}
+
+static void publish_track(const char *uri) {
+    const char *dir = is_yam_mode ? "./data/requests" : "/data/opt/soloist/data/requests";
+    const char *tmp = is_yam_mode ? "./data/requests/track.tmp" : "/data/opt/soloist/data/requests/track.tmp";
+    const char *path = is_yam_mode ? "./data/requests/track" : "/data/opt/soloist/data/requests/track";
+    sys_mkdir(dir, 0700);
+    int fd = sys_open(tmp, 577 /* O_WRONLY|O_CREAT|O_TRUNC */, 0600);
+    if (fd < 0) return;
+    char record[160], digits[20];
+    unsigned long length = str_len(uri), count = 0;
+    if (length >= 128) { sys_close(fd); return; }
+    for (unsigned long i = 0; i < length; i++) record[i] = uri[i];
+    record[length++] = '\n';
+    uint64_t revision = (uint64_t)now_ms();
+    if (revision <= track_observation_revision) revision = track_observation_revision + 1;
+    track_observation_revision = revision;
+    do { digits[count++] = (char)('0' + revision % 10); revision /= 10; } while (revision);
+    while (count) record[length++] = digits[--count];
+    record[length++] = '\n';
+    long written = sys_write(fd, record, length);
+    sys_close(fd);
+    if (written == (long)length) sys_rename(tmp, path);
+}
+
+struct controller_command {
+    char action[16];
+    char arg[512];
+    char generation[32];
+};
+static struct controller_command controller_queue[16];
+static unsigned int controller_head, controller_count;
+static long controller_pid;
+static int controller_fd = -1;
+
+static void service_controllers(void) {
+    int status;
+    while (sys_wait4(-1, &status, 1 /* WNOHANG */, 0) > 0) {}
+    if (controller_pid > 0) {
+        char admission = 0;
+        long result = sys_read(controller_fd, &admission, 1);
+        if (result == -11 /* EAGAIN */ || result == -4 /* EINTR */) return;
+        if (result != 1 || admission != 'A') {
+            log_msg("[bridge] Command admission failed: ");
+            log_msg(controller_queue[controller_head].action);
+            log_msg("\n");
         }
-        const char *argv[] = {
-            bin,
-            "ctl",
-            "-w",
-            "127.0.0.1:9090",
-            cmd,
-            0
-        };
-        sys_execve(bin, argv, envp);
-        sys_exit(1);
+        sys_close(controller_fd);
+        controller_fd = -1;
+        controller_pid = 0;
+        controller_head = (controller_head + 1) % 16;
+        controller_count--;
     }
-}
-
-static void run_soloist_cmd2(const char *cmd, const char *arg) {
+    if (!controller_count) return;
+    struct controller_command *command = &controller_queue[controller_head];
+    int admission_pipe[2];
+    if (sys_pipe(admission_pipe) < 0) {
+        log_msg("[bridge] Cannot open command admission pipe\n");
+        controller_head = (controller_head + 1) % 16;
+        controller_count--;
+        return;
+    }
     long pid = sys_clone(17 /* SIGCHLD */, 0);
     if (pid == 0) {
-        const char *bin = get_soloist_bin();
-        const char *argv[] = {
-            bin,
-            "ctl",
-            "-w",
-            "127.0.0.1:9090",
-            cmd,
-            arg,
-            0
-        };
+        sys_close(admission_pipe[0]);
+        if (admission_pipe[1] != 3) {
+            if (sys_dup3(admission_pipe[1], 3) < 0) sys_exit(1);
+            sys_close(admission_pipe[1]);
+        }
+        // Service launchers may ignore these signals; controllers must be stoppable.
+        if (sys_signal_default(1) < 0 || sys_signal_default(2) < 0 || sys_signal_default(15) < 0) sys_exit(1);
+        const char *argv[] = { "/bin/sh", get_controller_sh(), command->action,
+            command->arg[0] ? command->arg : 0,
+            command->generation[0] ? command->generation : 0, 0 };
         const char *envp[] = {
             "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-            "LD_LIBRARY_PATH=./lib64:/data/opt/soloist/lib64",
-            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-            0
-        };
-        sys_execve(bin, argv, envp);
-        sys_exit(1);
-    }
-}
-
-static void run_toggle(void) {
-    long pid = sys_clone(17 /* SIGCHLD */, 0);
-    if (pid == 0) {
-        const char *sh = get_toggle_sh();
-        const char *argv[] = {
-            "/bin/sh",
-            sh,
-            0
-        };
-        const char *envp[] = {
-            "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-            0
+            "SOLOIST_BRIDGE_ADMISSION=1",
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt", 0
         };
         sys_execve("/bin/sh", argv, envp);
         sys_exit(1);
     }
-}
-
-static void run_search_and_play(const char *query) {
-    long pid = sys_clone(17 /* SIGCHLD */, 0);
-    if (pid == 0) {
-        const char *sh = get_search_sh();
-        const char *argv[] = {
-            "/bin/sh",
-            sh,
-            query,
-            0
-        };
-        const char *envp[] = {
-            "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-            0
-        };
-        sys_execve("/bin/sh", argv, envp);
-        sys_exit(1);
+    sys_close(admission_pipe[1]);
+    if (pid > 0) {
+        controller_pid = pid;
+        controller_fd = admission_pipe[0];
+    } else {
+        sys_close(admission_pipe[0]);
+        log_msg("[bridge] Cannot start command admission\n");
+        controller_head = (controller_head + 1) % 16;
+        controller_count--;
     }
 }
 
-/* Protobuf parser helpers */
-
-static uint64_t parse_varint(const uint8_t *data, unsigned long len, unsigned long *offset) {
-    uint64_t res = 0;
-    int shift = 0;
-    while (*offset < len && shift < 64) {
-        uint8_t b = data[(*offset)++];
-        res |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) break;
-        shift += 7;
+static void run_controller(const char *action, const char *arg) {
+    unsigned long action_len = str_len(action), arg_len = str_len(arg);
+    if (controller_count == 16 || action_len >= 16 || arg_len >= 512) {
+        log_msg("[bridge] Command rejected: admission queue full or argument too long\n");
+        return;
     }
-    return res;
+    struct controller_command *command = &controller_queue[(controller_head + controller_count) % 16];
+    for (unsigned long i = 0; i <= action_len; i++) command->action[i] = action[i];
+    for (unsigned long i = 0; i < arg_len; i++) command->arg[i] = arg[i];
+    command->arg[arg_len] = 0;
+    command->generation[0] = 0;
+    if (str_equal(action, "auto-next")) { // Observe intent before waiting in the queue.
+        const char *path = is_yam_mode ? "./data/requests/generation" : "/data/opt/soloist/data/requests/generation";
+        int fd = sys_open(path, 0, 0);
+        long n = fd < 0 ? 0 : sys_read(fd, command->generation, sizeof(command->generation) - 1);
+        if (fd >= 0) sys_close(fd);
+        if (n <= 0) { command->generation[0] = '0'; n = 1; }
+        while (n > 0 && (command->generation[n-1] == '\n' || command->generation[n-1] == '\r')) n--;
+        command->generation[n] = 0;
+    }
+    controller_count++;
+    service_controllers();
 }
 
-static int find_field(const uint8_t *data, unsigned long len, uint32_t field_num, int expected_wire, const uint8_t **val_ptr, unsigned long *val_len, uint64_t *varint_val) {
-    unsigned long offset = 0;
-    while (offset < len) {
-        uint64_t tag = parse_varint(data, len, &offset);
-        uint32_t fnum = (uint32_t)(tag >> 3);
-        int wire = (int)(tag & 7);
-        if (fnum == 0) return 0;
-        if (wire == 0) {
-            uint64_t v = parse_varint(data, len, &offset);
-            if (fnum == field_num && expected_wire == 0) {
-                if (varint_val) *varint_val = v;
-                return 1;
-            }
-        } else if (wire == 2) {
-            uint64_t flen = parse_varint(data, len, &offset);
-            if (flen > len - offset) return 0;
-            if (fnum == field_num && expected_wire == 2) {
-                if (val_ptr) *val_ptr = &data[offset];
-                if (val_len) *val_len = flen;
-                return 1;
-            }
-            offset += flen;
-        } else if (wire == 1) {
-            offset += 8;
-        } else if (wire == 5) {
-            offset += 4;
-        } else {
-            return 0;
-        }
-    }
-    return 0;
-}
+static void run_soloist_cmd(const char *cmd) { run_controller(cmd, 0); }
+static void run_soloist_cmd2(const char *cmd, const char *arg) { run_controller(cmd, arg); }
+static void run_toggle(void) { run_controller("toggle", 0); }
+static void run_search_and_play(const char *query) { run_controller("search", query); }
+
+/* Text and command classification helpers */
 
 static void to_lower_ru(char *dst, const char *src, unsigned long max) {
     unsigned long si = 0, di = 0;
@@ -616,6 +766,7 @@ static void handle_soloist_ws_json(const char *json) {
             playback_status = 0;
             playback_speed = 0;
             spotify_is_active = 0;
+            run_controller("clean-cache-full", 0);
         }
     }
 
@@ -639,15 +790,28 @@ static void handle_soloist_ws_json(const char *json) {
     if (json_find_str(json, "uri", uri_buf, sizeof(uri_buf))) {
         if (uri_buf[0] == 's' && uri_buf[1] == 'p' && uri_buf[2] == 'o' && uri_buf[3] == 't') {
             if (!str_equal(current_track_uri, uri_buf)) {
+                if (current_track_uri[0] != 0) {
+                    run_controller("clean-cache", 0);
+                }
                 str_copy(current_track_uri, uri_buf, sizeof(current_track_uri));
+                publish_track(current_track_uri);
                 stuck_since_ms = 0;
                 log_msg("[bridge] Current track: ");
                 log_msg(current_track_uri);
                 log_msg("\n");
+            } else if (selection_needs_observation()) {
+                publish_track(current_track_uri);
             }
         }
     }
 }
+
+#ifdef __aarch64__
+static void set_led_visualizer_impl(int enable);
+static inline void set_led_visualizer(int enable) { set_led_visualizer_impl(enable); }
+#else
+static inline void set_led_visualizer(int enable) { (void)enable; }
+#endif
 
 static void handle_voice_recognition(int quasar_fd, const char *text, unsigned long text_len) {
     char lower_buf[512];
@@ -664,6 +828,39 @@ static void handle_voice_recognition(int quasar_fd, const char *text, unsigned l
 
     // An explicit catalog search ("включи песню ...") must not be hijacked by control words in the title
     if (!is_explicit_search(lower_buf)) {
+        // Check LED Visualizer / Equalizer OFF keywords (NO "выключи" or "отключи" to avoid smart home collisions)
+        if (str_contains(lower_buf, "стоп дискотек") ||
+            str_contains(lower_buf, "останови дискотек") ||
+            str_contains(lower_buf, "стоп эквалайзер") ||
+            str_contains(lower_buf, "останови эквалайзер") ||
+            str_contains(lower_buf, "стоп светомузык") ||
+            str_contains(lower_buf, "останови светомузык") ||
+            str_contains(lower_buf, "погаси подсветк") ||
+            str_contains(lower_buf, "хватит светить")) {
+            log_msg("[bridge] Action: LED VISUALIZER OFF\n");
+            trigger_alice_suppression(quasar_fd, 2500);
+            set_led_visualizer(0);
+            return;
+        }
+
+        // Check LED Visualizer / Equalizer ON keywords (STRICTLY NO "включи", "выключи", or "отключи")
+        if (!str_contains(lower_buf, "включ") &&
+            !str_contains(lower_buf, "выключ") &&
+            !str_contains(lower_buf, "отключ")) {
+            if (str_contains(lower_buf, "зажигай") ||
+                str_contains(lower_buf, "зажги") ||
+                str_contains(lower_buf, "покажи эквалайзер") ||
+                str_contains(lower_buf, "режим дискотек") ||
+                str_contains(lower_buf, "светомузык") ||
+                str_contains(lower_buf, "эквалайзер") ||
+                str_contains(lower_buf, "дискотек")) {
+                log_msg("[bridge] Action: LED VISUALIZER ON (Nothing Phone Equalizer mode)\n");
+                trigger_alice_suppression(quasar_fd, 2500);
+                set_led_visualizer(1);
+                return;
+            }
+        }
+
         // Check PAUSE / STOP keywords (Instant Action)
         if (str_contains(lower_buf, "пауз") ||
             str_contains(lower_buf, "стоп") ||
@@ -766,11 +963,7 @@ static void handle_voice_recognition(int quasar_fd, const char *text, unsigned l
             str_contains(lower_buf, "с матом") ||
             str_contains(lower_buf, "взрослый режим")) {
             log_msg("[bridge] Action: CENSORSHIP OFF\n");
-            register long x8 __asm__("x8") = 35; // unlinkat
-            register long x0 __asm__("x0") = -100; // AT_FDCWD
-            register long x1 __asm__("x1") = (long)get_censor_path();
-            register long x2 __asm__("x2") = 0;
-            __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+            sys_unlink(get_censor_path());
         } else {
             log_msg("[bridge] Action: CENSORSHIP ON\n");
             int fd = sys_open(get_censor_path(), 0100 | 01 | 01000 /* O_CREAT|O_WRONLY|O_TRUNC */, 0644);
@@ -814,7 +1007,7 @@ static void handle_voice_recognition(int quasar_fd, const char *text, unsigned l
             return;
         }
 
-        trigger_alice_suppression(quasar_fd, 4000);
+        trigger_alice_suppression(quasar_fd, 5000);
         spotify_is_active = 1;
 
         log_msg("[bridge] Action: SEARCH & PLAY query='");
@@ -825,17 +1018,471 @@ static void handle_voice_recognition(int quasar_fd, const char *text, unsigned l
     }
 }
 
+/* =========================================================================
+ * LED Equalizer / Visualizer Subsystem (Nothing Phone style / Multi-zone)
+ * Supports:
+ *   - Yandex Station Lite 1: 3 RGB zones (micro:red:ring1..3)
+ *   - Yandex Station Lite 2: 3 RGB zones (plum:red:ring1..3, restores led_ring_fb)
+ *   - Yandex Station Mini 2: 6 RGB zones (mini2:red:ring1..6)
+ *   - Yandex Station Midi:  24 RGB zones (cucumber:red:ring0..23)
+ * Default Color: Pure White across all LEDs (Nothing Phone aesthetic).
+ * Configurable via spotify_api.conf (LED_VISUALIZER=white|rainbow|cyan, LED_BRIGHTNESS=0..255)
+ * ========================================================================= */
+
+static const uint8_t sin64[64] = {
+    128, 140, 152, 164, 176, 187, 198, 208, 217, 226, 233, 240, 245, 249, 252, 254,
+    255, 254, 252, 249, 245, 240, 233, 226, 217, 208, 198, 187, 176, 164, 152, 140,
+    128, 115, 103,  91,  79,  68,  57,  47,  38,  29,  22,  15,  10,   6,   3,   1,
+      1,   1,   3,   6,  10,  15,  22,  29,  38,  47,  57,  68,  79,  91, 103, 115
+};
+
+struct led_hardware_info {
+    int probed;
+    int detected;
+    int num_zones;
+    int is_zero_indexed; // 1 for cucumber (ring0..ring23), 0 for micro/plum/mini2 (ring1..ringN)
+    char prefix[32];     // e.g. "/sys/class/leds/micro:"
+    int is_plum;         // requires restoring trigger led_ring_fb
+};
+
+static struct led_hardware_info g_led_hw = {0};
+static int g_led_enabled = 0;       // 0=off (default), 1=on
+static int g_led_color_mode = 0;    // 0=white (Nothing Phone style), 1=rainbow, 2=cyan, 3=red, 4=green, 5=blue, 6=magenta, 7=yellow
+static int g_led_brightness = 180;  // 1-255, default 180
+static uint64_t g_led_frame = 0;
+static int g_led_last_active = 0;
+static uint32_t g_bass_level = 0;
+static uint32_t g_treble_level = 0;
+static int32_t *g_audio_shm_ptr = 0;
+static uint32_t g_auto_max_rms = 120;
+static uint32_t g_prev_zone_val[24] = {0};
+
+static inline uint32_t isqrt(uint64_t n) {
+    uint64_t root = 0;
+    uint64_t bit = (uint64_t)1 << 62;
+    while (bit > n) bit >>= 2;
+    while (bit != 0) {
+        if (n >= root + bit) {
+            n -= (root + bit);
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (uint32_t)root;
+}
+
+static void audio_shm_ensure_attached(void) {
+    if (g_audio_shm_ptr) return;
+    int shmid = sys_shmget(0x401, 61440, 0444);
+    if (shmid >= 0) {
+        void *ptr = sys_shmat(shmid, 0, 010000 /* SHM_RDONLY */);
+        if ((long)ptr > 0 && (long)ptr != -1) {
+            g_audio_shm_ptr = (int32_t *)ptr;
+        }
+    }
+}
+
+static void audio_shm_detach(void) {
+    if (g_audio_shm_ptr) {
+        sys_shmdt(g_audio_shm_ptr);
+        g_audio_shm_ptr = 0;
+    }
+}
+
+static inline uint32_t apply_audio_curve(uint32_t raw_rms, uint32_t max_ref) {
+    // Noise gate: below 35% of peak/max_ref, keep completely dark
+    uint32_t gate = (max_ref * 35) / 100;
+    if (raw_rms <= gate) return 0;
+
+    uint32_t span = max_ref - gate;
+    if (span == 0) return 0;
+
+    uint32_t diff = raw_rms - gate;
+    if (diff > span) diff = span;
+
+    // Normalize to 0..255
+    uint32_t norm = (diff * 255) / span;
+
+    // Non-linear quadratic curve: norm^2 / 255
+    // Quiet sounds are suppressed/nearly invisible, loud peaks flare up sharply
+    return (norm * norm) / 255;
+}
+
+static void write_sysfs_int(const char *path, int val) {
+    int fd = sys_open(path, 01 /* O_WRONLY */, 0);
+    if (fd < 0) return;
+    char buf[16];
+    int len = 0;
+    if (val <= 0) {
+        buf[0] = '0';
+        buf[1] = '\n';
+        len = 2;
+    } else {
+        if (val > 255) val = 255;
+        char tmp[10];
+        int tp = 0;
+        int n = val;
+        while (n > 0) {
+            tmp[tp++] = '0' + (n % 10);
+            n /= 10;
+        }
+        while (tp > 0) {
+            buf[len++] = tmp[--tp];
+        }
+        buf[len++] = '\n';
+    }
+    sys_write(fd, buf, len);
+    sys_close(fd);
+}
+
+static void write_sysfs_str(const char *path, const char *str) {
+    int fd = sys_open(path, 01 /* O_WRONLY */, 0);
+    if (fd < 0) return;
+    sys_write(fd, str, str_len(str));
+    sys_close(fd);
+}
+
+static void build_led_path(char *dst, unsigned long max, const char *color, int zone_idx) {
+    unsigned long p = 0;
+    const char *pr = g_led_hw.prefix;
+    while (*pr && p + 1 < max) dst[p++] = *pr++;
+    while (*color && p + 1 < max) dst[p++] = *color++;
+    const char *mid = ":ring";
+    while (*mid && p + 1 < max) dst[p++] = *mid++;
+    if (zone_idx >= 10) {
+        if (p + 1 < max) dst[p++] = '0' + (zone_idx / 10);
+        if (p + 1 < max) dst[p++] = '0' + (zone_idx % 10);
+    } else {
+        if (p + 1 < max) dst[p++] = '0' + zone_idx;
+    }
+    const char *suf = "/brightness";
+    while (*suf && p + 1 < max) dst[p++] = *suf++;
+    dst[p] = 0;
+}
+
+static void led_probe(void) {
+    if (g_led_hw.probed) return;
+    g_led_hw.probed = 1;
+
+    // Check Station Lite 1 (micro)
+    int fd = sys_open("/sys/class/leds/micro:red:ring1/brightness", 0, 0);
+    if (fd >= 0) {
+        sys_close(fd);
+        g_led_hw.detected = 1;
+        g_led_hw.num_zones = 3;
+        g_led_hw.is_zero_indexed = 0;
+        g_led_hw.is_plum = 0;
+        str_copy(g_led_hw.prefix, "/sys/class/leds/micro:", sizeof(g_led_hw.prefix));
+        log_msg("[bridge] LEDs detected: Station Lite 1 (3 RGB zones)\n");
+        return;
+    }
+    // Check Station Lite 2 (plum)
+    fd = sys_open("/sys/class/leds/plum:red:ring1/brightness", 0, 0);
+    if (fd >= 0) {
+        sys_close(fd);
+        g_led_hw.detected = 1;
+        g_led_hw.num_zones = 3;
+        g_led_hw.is_zero_indexed = 0;
+        g_led_hw.is_plum = 1;
+        str_copy(g_led_hw.prefix, "/sys/class/leds/plum:", sizeof(g_led_hw.prefix));
+        log_msg("[bridge] LEDs detected: Station Lite 2 (3 RGB zones, Plum)\n");
+        return;
+    }
+    // Check Station Mini 2 (mini2)
+    fd = sys_open("/sys/class/leds/mini2:red:ring1/brightness", 0, 0);
+    if (fd >= 0) {
+        sys_close(fd);
+        g_led_hw.detected = 1;
+        g_led_hw.num_zones = 6;
+        g_led_hw.is_zero_indexed = 0;
+        g_led_hw.is_plum = 0;
+        str_copy(g_led_hw.prefix, "/sys/class/leds/mini2:", sizeof(g_led_hw.prefix));
+        log_msg("[bridge] LEDs detected: Station Mini 2 (6 RGB zones)\n");
+        return;
+    }
+    // Check Station Midi (cucumber)
+    fd = sys_open("/sys/class/leds/cucumber:red:ring0/brightness", 0, 0);
+    if (fd >= 0) {
+        sys_close(fd);
+        g_led_hw.detected = 1;
+        g_led_hw.num_zones = 24;
+        g_led_hw.is_zero_indexed = 1;
+        g_led_hw.is_plum = 0;
+        str_copy(g_led_hw.prefix, "/sys/class/leds/cucumber:", sizeof(g_led_hw.prefix));
+        log_msg("[bridge] LEDs detected: Station Midi (24 RGB zones)\n");
+        return;
+    }
+}
+
+static void led_all_off(void) {
+    audio_shm_detach();
+    for (int i = 0; i < 24; i++) g_prev_zone_val[i] = 0;
+    if (!g_led_hw.detected) return;
+    int start = g_led_hw.is_zero_indexed ? 0 : 1;
+    int end = start + g_led_hw.num_zones;
+    char path[80];
+    for (int z = start; z < end; z++) {
+        build_led_path(path, sizeof(path), "red", z);
+        write_sysfs_int(path, 0);
+        build_led_path(path, sizeof(path), "green", z);
+        write_sysfs_int(path, 0);
+        build_led_path(path, sizeof(path), "blue", z);
+        write_sysfs_int(path, 0);
+    }
+    if (g_led_hw.is_plum) {
+        for (int z = start; z < end; z++) {
+            char tpath[80];
+            build_led_path(tpath, sizeof(tpath), "red", z);
+            for (int i = 0; tpath[i]; i++) {
+                if (tpath[i] == 'b' && tpath[i+1] == 'r') {
+                    str_copy(tpath + i, "trigger", sizeof(tpath) - i);
+                    break;
+                }
+            }
+            write_sysfs_str(tpath, "led_ring_fb\n");
+        }
+    }
+    g_led_last_active = 0;
+}
+
+static void set_led_visualizer_impl(int enable) {
+    led_probe();
+    g_led_enabled = enable ? 1 : 0;
+    if (!g_led_enabled) {
+        audio_shm_detach();
+        led_all_off();
+    }
+    const char *state_path = is_yam_mode ? "./data/requests/led_state" : "/data/opt/soloist/data/requests/led_state";
+    int fd = sys_open(state_path, 0100 | 01 | 01000 /* O_CREAT|O_WRONLY|O_TRUNC */, 0644);
+    if (fd >= 0) {
+        if (g_led_enabled) {
+            sys_write(fd, "on\n", 3);
+        } else {
+            sys_write(fd, "off\n", 4);
+        }
+        sys_close(fd);
+    }
+    log_msg(g_led_enabled ? "[bridge] LED visualizer: ON (Nothing Phone Equalizer)\n" : "[bridge] LED visualizer: OFF\n");
+}
+
+static void read_led_config(void) {
+    const char *conf_path = is_yam_mode ? "./spotify_api.conf" : "/data/opt/soloist/spotify_api.conf";
+    int fd = sys_open(conf_path, 0, 0);
+    if (fd < 0) return;
+    char buf[1024];
+    long n = sys_read(fd, buf, sizeof(buf) - 1);
+    sys_close(fd);
+    if (n <= 0) return;
+    buf[n] = 0;
+    if (str_contains(buf, "LED_VISUALIZER=on") || str_contains(buf, "LED_VISUALIZER=1")) {
+        g_led_enabled = 1;
+    } else if (str_contains(buf, "LED_VISUALIZER=rainbow")) {
+        g_led_enabled = 1;
+        g_led_color_mode = 1;
+    } else if (str_contains(buf, "LED_VISUALIZER=cyan")) {
+        g_led_enabled = 1;
+        g_led_color_mode = 2;
+    } else if (str_contains(buf, "LED_VISUALIZER=white")) {
+        g_led_enabled = 1;
+        g_led_color_mode = 0;
+    }
+}
+
+static void check_led_request(void) {
+    const char *path = is_yam_mode ? "./data/requests/led" : "/data/opt/soloist/data/requests/led";
+    int fd = sys_open(path, 0, 0);
+    if (fd < 0) return;
+    char cmd[16];
+    long n = sys_read(fd, cmd, sizeof(cmd) - 1);
+    sys_close(fd);
+    sys_unlink(path);
+
+    if (n > 0) {
+        if (cmd[0] == '1' || (cmd[0] == 'o' && cmd[1] == 'n')) {
+            set_led_visualizer(1);
+        } else if (cmd[0] == '0' || (cmd[0] == 'o' && cmd[1] == 'f')) {
+            set_led_visualizer(0);
+        } else if (cmd[0] == 'w') {
+            g_led_color_mode = 0;
+            set_led_visualizer(1);
+        } else if (cmd[0] == 'r') {
+            g_led_color_mode = 1;
+            set_led_visualizer(1);
+        } else if (cmd[0] == 'c') {
+            g_led_color_mode = 2;
+            set_led_visualizer(1);
+        }
+    }
+}
+
+static void led_visualizer_tick(void) {
+    if (!g_led_enabled) {
+        if (g_led_last_active) {
+            audio_shm_detach();
+            led_all_off();
+        }
+        return;
+    }
+    if (!g_led_hw.detected) return;
+
+    if (playback_status != 1) {
+        if (g_led_last_active) {
+            audio_shm_detach();
+            led_all_off();
+        }
+        return;
+    }
+
+    g_led_last_active = 1;
+    g_led_frame++;
+
+    audio_shm_ensure_attached();
+
+    uint32_t bass_energy = 0;
+    uint32_t mid_energy = 0;
+    uint32_t treble_energy = 0;
+
+    if (g_audio_shm_ptr) {
+        int64_t total_sum_sq = 0;
+        int64_t bass_sum_sq = 0;
+        int64_t treble_sum_sq = 0;
+        int32_t lpf = 0;
+        int32_t prev_sample = 0;
+        int samples_read = 0;
+
+        // Sample Left channel across 160ms dmix buffer (7680 samples @ 48kHz)
+        for (int i = 0; i < 15360; i += 2) {
+            int32_t s = g_audio_shm_ptr[i];
+            total_sum_sq += (int64_t)s * s;
+
+            // Low-pass filter for bass (cutoff ~470 Hz)
+            lpf = (lpf * 15 + s) / 16;
+            bass_sum_sq += (int64_t)lpf * lpf;
+
+            // High-pass filter for treble
+            int32_t diff = s - prev_sample;
+            prev_sample = s;
+            treble_sum_sq += (int64_t)diff * diff;
+
+            samples_read++;
+        }
+
+        if (samples_read > 0) {
+            uint32_t total_rms = isqrt((uint64_t)(total_sum_sq / samples_read));
+            uint32_t bass_rms = isqrt((uint64_t)(bass_sum_sq / samples_read));
+            uint32_t treble_rms = isqrt((uint64_t)(treble_sum_sq / samples_read));
+            uint32_t mid_rms = (total_rms > bass_rms) ? (total_rms - (bass_rms / 2)) : (total_rms / 2);
+
+            // Auto-gain peak tracker
+            if (total_rms > g_auto_max_rms) {
+                g_auto_max_rms = total_rms;
+            } else {
+                g_auto_max_rms = (g_auto_max_rms * 98) / 100;
+            }
+            if (g_auto_max_rms < 50) g_auto_max_rms = 50;
+
+            bass_energy = apply_audio_curve(bass_rms, g_auto_max_rms);
+            mid_energy = apply_audio_curve(mid_rms, g_auto_max_rms);
+            treble_energy = apply_audio_curve(treble_rms, g_auto_max_rms);
+        }
+    } else {
+        // Fallback simulation if SHM is unavailable
+        uint32_t bar_pos = g_led_frame % 40;
+        if (bar_pos == 0 || bar_pos == 10 || bar_pos == 20 || bar_pos == 30 || bar_pos == 26) {
+            g_bass_level = 255;
+        } else {
+            g_bass_level = (g_bass_level * 78) / 100;
+        }
+        if ((bar_pos % 4) == 0) {
+            g_treble_level = 220;
+        } else {
+            g_treble_level = (g_treble_level * 55) / 100;
+        }
+        uint32_t s1 = sin64[(g_led_frame * 2) % 64];
+        uint32_t s2 = sin64[(g_led_frame * 3 + 16) % 64];
+        uint32_t sim_mid = (s1 * 7 + s2 * 3) / 10;
+
+        bass_energy = g_bass_level;
+        mid_energy = sim_mid;
+        treble_energy = g_treble_level;
+    }
+
+    int n_zones = g_led_hw.num_zones;
+    int start = g_led_hw.is_zero_indexed ? 0 : 1;
+    char path[80];
+
+    for (int i = 0; i < n_zones; i++) {
+        int z = start + i;
+        uint32_t target_energy = 0;
+
+        if (n_zones == 3) {
+            if (i == 0) target_energy = bass_energy;
+            else if (i == 1) target_energy = mid_energy;
+            else target_energy = treble_energy;
+        } else if (n_zones == 6) {
+            if (i == 0) target_energy = bass_energy;
+            else if (i == 1) target_energy = (bass_energy + mid_energy) / 2;
+            else if (i == 2) target_energy = mid_energy;
+            else if (i == 3) target_energy = (mid_energy + treble_energy) / 2;
+            else if (i == 4) target_energy = treble_energy;
+            else target_energy = (treble_energy + bass_energy) / 2;
+        } else {
+            uint32_t fraction = ((uint32_t)i * 3) / (uint32_t)n_zones;
+            if (fraction == 0) target_energy = bass_energy;
+            else if (fraction == 1) target_energy = mid_energy;
+            else target_energy = treble_energy;
+        }
+
+        if (target_energy > 255) target_energy = 255;
+
+        // Smooth decay / instant attack
+        uint32_t prev = g_prev_zone_val[i];
+        if (target_energy > prev) {
+            g_prev_zone_val[i] = target_energy; // Instant attack on beat
+        } else {
+            g_prev_zone_val[i] = (prev * 70 + target_energy * 30) / 100; // Smooth fade-out
+        }
+
+        uint32_t val = (g_prev_zone_val[i] * (uint32_t)g_led_brightness) / 255;
+
+        int r = 0, g = 0, b = 0;
+        if (g_led_color_mode == 0) {
+            r = val; g = val; b = val;
+        } else if (g_led_color_mode == 1) {
+            uint32_t hue = (g_led_frame * 3 + (uint32_t)i * (64 / (uint32_t)n_zones)) % 64;
+            r = (sin64[hue] * val) / 255;
+            g = (sin64[(hue + 21) % 64] * val) / 255;
+            b = (sin64[(hue + 42) % 64] * val) / 255;
+        } else if (g_led_color_mode == 2) {
+            r = 0; g = val; b = val;
+        } else if (g_led_color_mode == 3) {
+            r = val; g = 0; b = 0;
+        } else if (g_led_color_mode == 4) {
+            r = 0; g = val; b = 0;
+        } else if (g_led_color_mode == 5) {
+            r = 0; g = 0; b = val;
+        } else if (g_led_color_mode == 6) {
+            r = val; g = 0; b = val;
+        } else if (g_led_color_mode == 7) {
+            r = val; g = val; b = 0;
+        }
+
+        build_led_path(path, sizeof(path), "red", z);
+        write_sysfs_int(path, r);
+        build_led_path(path, sizeof(path), "green", z);
+        write_sysfs_int(path, g);
+        build_led_path(path, sizeof(path), "blue", z);
+        write_sysfs_int(path, b);
+    }
+}
+
 static uint8_t quasar_buf[65536];
 static unsigned long quasar_buf_pos = 0;
 static uint8_t ws_buf[8192];
 static unsigned long ws_buf_pos = 0;
-static char last_uuid[64];
-static int64_t last_uuid_time = 0;
-static char last_processed_text[256];
-static int64_t last_processed_text_time = 0;
-static char last_executed_action[256];
-static int64_t last_executed_action_time = 0;
-static int64_t last_search_time = 0;
+static struct voice_request_state voice_requests;
 
 #define MAX_INPUT_DEVS 8
 static int input_fds[MAX_INPUT_DEVS];
@@ -880,6 +1527,9 @@ void _start(void) {
         log_msg("[bridge] soloist-bridge v14 started (Standalone mode: /data/opt/soloist)\n");
     }
 
+    read_led_config();
+    led_probe();
+
     int quasar_fd = -1;
     int soloist_ws_fd = -1;
     int soloist_ws_handshake = 0;
@@ -892,8 +1542,7 @@ void _start(void) {
     int touch_is_down = 0;
 
     while (1) {
-        int status = 0;
-        while (sys_wait4(-1, &status, 1 /* WNOHANG */, 0) > 0) {}
+        service_controllers();
 
         int64_t now = now_ms();
 
@@ -1016,139 +1665,17 @@ void _start(void) {
                         const uint8_t *frame_body = quasar_buf + 4;
                         const uint8_t *state_payload = 0;
                         unsigned long state_len = 0;
-
-                        if (find_field(frame_body, frame_len, 3, 2, &state_payload, &state_len, 0)) {
-                            // AliceState in f=3
-                        } else if (find_field(frame_body, frame_len, 252, 2, &state_payload, &state_len, 0)) {
-                            // AliceState in f=252
-                        }
-
-                        if (state_payload && state_len > 0) {
+                        if (voice_state_payload(frame_body, frame_len, &state_payload, &state_len)) {
                             uint64_t alice_state = 0;
-                            find_field(state_payload, state_len, 1, 0, 0, 0, &alice_state);
-
-                            // Silence Alice if she attempts to speak TTS (state 2), process (state 3), or listen during our suppression window
-                            if (alice_state != 0 && now < cancel_alice_until_ms) {
+                            if (find_field(state_payload, state_len, 1, 0, 0, 0, &alice_state) &&
+                                alice_state != 0 && now < cancel_alice_until_ms) {
                                 send_cancel_alice(quasar_fd);
                             }
-
-                            const uint8_t *asr_payload = 0;
-                            unsigned long asr_len = 0;
-                            uint64_t is_final = 0;
-                            const uint8_t *text_bytes = 0;
-                            unsigned long text_len = 0;
-
-                            // Extract live recognized text ONLY from request_state (f=15) or text_state (f=13).
-                            // NEVER read field 2 of AliceState: it contains stale recognized_phrase from past queries!
-                            if (find_field(state_payload, state_len, 15, 2, &asr_payload, &asr_len, 0)) {
-                                find_field(asr_payload, asr_len, 1, 2, &text_bytes, &text_len, 0);
-                                find_field(asr_payload, asr_len, 2, 0, 0, 0, &is_final);
-                            } else {
-                                const uint8_t *text_payload = 0;
-                                unsigned long text_payload_len = 0;
-                                if (find_field(state_payload, state_len, 13, 2, &text_payload, &text_payload_len, 0)) {
-                                    find_field(text_payload, text_payload_len, 1, 2, &text_bytes, &text_len, 0);
-                                    find_field(text_payload, text_payload_len, 4, 0, 0, 0, &is_final);
-                                }
-                            }
-
-                            const uint8_t *uuid_bytes = 0;
-                            unsigned long uuid_len = 0;
-                            find_field(state_payload, state_len, 7, 2, &uuid_bytes, &uuid_len, 0);
-                            if ((!uuid_bytes || uuid_len == 0) && asr_payload) {
-                                find_field(asr_payload, asr_len, 3, 2, &uuid_bytes, &uuid_len, 0);
-                            }
-
-                            if (text_bytes && text_len > 0) {
-                                char lower_check[512];
-                                char raw_check[512];
-                                unsigned long clen = text_len;
-                                if (clen >= sizeof(raw_check)) clen = sizeof(raw_check) - 1;
-                                for (unsigned long i = 0; i < clen; i++) raw_check[i] = text_bytes[i];
-                                raw_check[clen] = 0;
-                                to_lower_ru(lower_check, raw_check, sizeof(lower_check));
-
-                                int is_fast_ctrl = 0;
-                                if (!is_explicit_search(lower_check)) {
-                                    if (str_contains(lower_check, "пауз") ||
-                                        str_contains(lower_check, "стоп") ||
-                                        str_contains(lower_check, "хватит") ||
-                                        str_contains(lower_check, "замолчи") ||
-                                        str_contains(lower_check, "останови") ||
-                                        str_contains(lower_check, "выключи музыку") ||
-                                        str_contains(lower_check, "отключи музыку") ||
-                                        str_contains(lower_check, "дальше") ||
-                                        str_contains(lower_check, "следующ") ||
-                                        str_contains(lower_check, "переключи") ||
-                                        str_contains(lower_check, "пропусти") ||
-                                        str_contains(lower_check, "назад") ||
-                                        str_contains(lower_check, "предыдущ") ||
-                                        str_contains(lower_check, "прошл") ||
-                                        str_contains(lower_check, "перемешай") ||
-                                        str_contains(lower_check, "по порядку") ||
-                                        str_contains(lower_check, "зацикли") ||
-                                        str_contains(lower_check, "повторяй") ||
-                                        str_has_word_prefix(lower_check, "продолж") ||
-                                        str_has_word(lower_check, "играй") ||
-                                        str_has_word_prefix(lower_check, "возобнов") ||
-                                        str_has_word(lower_check, "заиграй") ||
-                                        str_contains(lower_check, "цензур") ||
-                                        str_contains(lower_check, "без мата") ||
-                                        str_contains(lower_check, "с матом") ||
-                                        str_contains(lower_check, "детский режим") ||
-                                        str_contains(lower_check, "взрослый режим")) {
-                                        is_fast_ctrl = 1;
-                                    }
-                                }
-
-                                // Fast control commands fire instantly without waiting for silence!
-                                // Search/Play queries wait for final recognition so the full phrase is captured!
-                                if (is_fast_ctrl || alice_state == 3 || is_final == 1) {
-                                    int is_dup = 0;
-
-                                    // 1. Same request/dialog UUID within 4000ms
-                                    if (uuid_bytes && uuid_len > 0 && uuid_len < sizeof(last_uuid)) {
-                                        if (now - last_uuid_time < 4000 && mem_equal(last_uuid, uuid_bytes, uuid_len)) {
-                                            is_dup = 1;
-                                        }
-                                    }
-
-                                    // 2. Exact same recognized phrase within 2500ms
-                                    if (str_equal(last_processed_text, lower_check) && (now - last_processed_text_time < 2500)) {
-                                        is_dup = 1;
-                                    }
-
-                                    // 3. Fast control action already performed within 1500ms
-                                    if (is_fast_ctrl && str_equal(last_executed_action, lower_check) && (now - last_executed_action_time < 1500)) {
-                                        is_dup = 1;
-                                    }
-
-                                    // 4. Search query cooldown: do not start multiple search scripts within 2500ms
-                                    if (!is_fast_ctrl && (now - last_search_time < 2500)) {
-                                        is_dup = 1;
-                                    }
-
-                                    if (!is_dup) {
-                                        str_copy(last_processed_text, lower_check, sizeof(last_processed_text));
-                                        last_processed_text_time = now;
-
-                                        if (uuid_bytes && uuid_len > 0 && uuid_len < sizeof(last_uuid)) {
-                                            for (unsigned long i = 0; i < uuid_len; i++) last_uuid[i] = (char)uuid_bytes[i];
-                                            last_uuid[uuid_len] = 0;
-                                            last_uuid_time = now;
-                                        }
-
-                                        if (is_fast_ctrl) {
-                                            str_copy(last_executed_action, lower_check, sizeof(last_executed_action));
-                                            last_executed_action_time = now;
-                                        } else {
-                                            last_search_time = now;
-                                        }
-
-                                        handle_voice_recognition(quasar_fd, (const char *)text_bytes, text_len);
-                                    }
-                                }
-                            }
+                        }
+                        const uint8_t *text_bytes = 0;
+                        unsigned long text_len = 0;
+                        if (voice_request_read(&voice_requests, frame_body, frame_len, &text_bytes, &text_len)) {
+                            handle_voice_recognition(quasar_fd, (const char *)text_bytes, text_len);
                         }
 
                         unsigned long total_consumed = 4 + frame_len;
@@ -1196,6 +1723,8 @@ void _start(void) {
                                     touch_down_start = 1;
                                     touch_down_time = now_ms();
                                     touch_is_down = 1;
+                                    // Suppress Alice immediately on press down
+                                    trigger_alice_suppression(quasar_fd, 4000);
                                 } else if (ev.value == 0) { // Release
                                     if (touch_down_start) {
                                         int64_t dur = now_ms() - touch_down_time;
@@ -1216,6 +1745,7 @@ void _start(void) {
                                             }
                                         } else {
                                             log_msg("[bridge] Button / Touch HOLD -> ALICE TRIGGER\n");
+                                            cancel_alice_until_ms = 0;
                                         }
                                     }
                                     touch_down_start = 0;
@@ -1343,7 +1873,7 @@ void _start(void) {
                             log_msg("[bridge] Auto-Next: track ended and audio output stalled, advancing to next track\n");
                             str_copy(last_auto_next_uri, current_track_uri, sizeof(last_auto_next_uri));
                             last_auto_next_time = now;
-                            run_soloist_cmd("next");
+                            run_controller("auto-next", current_track_uri);
                         }
                     }
                 } else {
@@ -1353,5 +1883,9 @@ void _start(void) {
                 stuck_since_ms = 0;
             }
         }
+
+        // 5. LED Visualizer / Equalizer update & request processing
+        check_led_request();
+        led_visualizer_tick();
     }
 }

@@ -9,7 +9,6 @@ cache/
 *.tar.gz
 *.zip
 *.yap
-
 # Downloaded from Spotify by prepare-official.ps1 for each trial
 bin/soloist
 bin/soloist.official.sha256
@@ -19,3 +18,4 @@ lib64/
 .soloist-staging/
 .package-staging/
 dist/
+*.yampkg
